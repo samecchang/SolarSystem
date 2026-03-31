@@ -1,0 +1,949 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>3D Solar System</title>
+  <style>
+    :root { --bg: #000408; --ui: rgba(10,14,20,0.85); --accent: #4fc3f7; --text: #cfd8dc; }
+    * { box-sizing: border-box; margin: 0; }
+    body { background: var(--bg); overflow: hidden; font-family: 'Segoe UI', system-ui, sans-serif; color: var(--text); }
+    #c { display: block; cursor: grab; }
+    #c:active { cursor: grabbing; }
+    .label { position: absolute; pointer-events: none; font-size: 11px; color: #fff; text-shadow: 0 0 4px #000, 0 0 8px #000;
+      transform: translate(-50%, -120%); white-space: nowrap; transition: opacity 0.2s; }
+    #controls { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); display: flex; align-items: center;
+      gap: 10px; background: var(--ui); padding: 8px 18px; border-radius: 24px; backdrop-filter: blur(8px);
+      border: 1px solid rgba(255,255,255,0.08); z-index: 10; }
+    #controls button { background: none; border: 1px solid rgba(255,255,255,0.15); color: var(--text); padding: 4px 12px;
+      border-radius: 12px; cursor: pointer; font-size: 13px; }
+    #controls button:hover { background: rgba(255,255,255,0.1); }
+    #controls button.active { background: var(--accent); color: #000; border-color: var(--accent); }
+    #controls label { font-size: 12px; display: flex; align-items: center; gap: 4px; cursor: pointer; }
+    #speed { width: 100px; accent-color: var(--accent); }
+    #speedVal { font-size: 11px; min-width: 42px; text-align: center; }
+    #info { position: fixed; top: 16px; right: 16px; background: var(--ui); padding: 14px 18px; border-radius: 12px;
+      backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,0.08); font-size: 13px; line-height: 1.6;
+      min-width: 200px; display: none; z-index: 10; }
+    #info h3 { margin: 0 0 6px; color: var(--accent); font-size: 15px; }
+    #info .row { display: flex; justify-content: space-between; }
+    #info .row span:first-child { opacity: 0.6; }
+    #hint { position: fixed; top: 12px; left: 12px; font-size: 12px; opacity: 0.5; pointer-events: none; z-index: 10; }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="labels"></div>
+<div id="hint">Drag to rotate · Scroll to zoom · Click a planet to focus</div>
+<div id="controls">
+  <button id="btnPause" title="Pause/Resume">⏸</button>
+  <span style="font-size:12px">Speed</span>
+  <input type="range" id="speed" min="0" max="100" value="62" step="1">
+  <span id="speedVal">1×</span>
+  <label><input type="checkbox" id="chkOrbits" checked> Orbits</label>
+  <label><input type="checkbox" id="chkLabels" checked> Labels</label>
+  <button id="btnReset" title="Reset to Sun">☀ Reset</button>
+</div>
+<div id="info"></div>
+
+<script>
+(() => {
+'use strict';
+
+/* ===== CANVAS & GL ===== */
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl', { alpha: false, antialias: true });
+if (!gl) { document.body.innerText = 'WebGL not supported'; return; }
+
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  gl.viewport(0, 0, canvas.width, canvas.height);
+}
+resize();
+window.addEventListener('resize', resize);
+
+/* ===== MATH ===== */
+const PI = Math.PI, TAU = 2 * PI, DEG = PI / 180;
+
+function v3(x,y,z) { return [x,y,z]; }
+function v3Add(a,b) { return [a[0]+b[0], a[1]+b[1], a[2]+b[2]]; }
+function v3Sub(a,b) { return [a[0]-b[0], a[1]-b[1], a[2]-b[2]]; }
+function v3Scale(a,s) { return [a[0]*s, a[1]*s, a[2]*s]; }
+function v3Dot(a,b) { return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]; }
+function v3Cross(a,b) { return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]]; }
+function v3Len(a) { return Math.hypot(a[0],a[1],a[2]); }
+function v3Norm(a) { const l=v3Len(a); return l>1e-10?[a[0]/l,a[1]/l,a[2]/l]:[0,0,0]; }
+function v3Lerp(a,b,t) { return [a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t]; }
+
+function m4() { const o=new Float32Array(16); o[0]=o[5]=o[10]=o[15]=1; return o; }
+function m4Copy(a) { return new Float32Array(a); }
+
+function m4Mul(a,b) {
+  const o = new Float32Array(16);
+  for (let i=0;i<4;i++) for (let j=0;j<4;j++) {
+    let s=0; for(let k=0;k<4;k++) s+=a[k*4+j]*b[i*4+k]; o[i*4+j]=s;
+  }
+  return o;
+}
+
+function m4Perspective(fov,asp,n,f) {
+  const o=new Float32Array(16), t=1/Math.tan(fov/2), nf=1/(n-f);
+  o[0]=t/asp; o[5]=t; o[10]=(f+n)*nf; o[11]=-1; o[14]=2*f*n*nf;
+  return o;
+}
+
+function m4LookAt(eye,center,up) {
+  const o=new Float32Array(16);
+  const f=v3Norm(v3Sub(center,eye));
+  const s=v3Norm(v3Cross(f,up));
+  const u=v3Cross(s,f);
+  o[0]=s[0]; o[1]=u[0]; o[2]=-f[0]; o[3]=0;
+  o[4]=s[1]; o[5]=u[1]; o[6]=-f[1]; o[7]=0;
+  o[8]=s[2]; o[9]=u[2]; o[10]=-f[2]; o[11]=0;
+  o[12]=-v3Dot(s,eye); o[13]=-v3Dot(u,eye); o[14]=v3Dot(f,eye); o[15]=1;
+  return o;
+}
+
+function m4Translate(m,x,y,z) {
+  const o=m4Copy(m);
+  for(let i=0;i<4;i++) o[12+i]+=m[i]*x+m[4+i]*y+m[8+i]*z;
+  return o;
+}
+
+function m4Scale(m,x,y,z) {
+  const o=m4Copy(m);
+  for(let i=0;i<4;i++) { o[i]*=x; o[4+i]*=y; o[8+i]*=z; }
+  return o;
+}
+
+function m4RotateX(m,r) {
+  const s=Math.sin(r),c=Math.cos(r),o=m4Copy(m);
+  for(let i=0;i<4;i++) { const a=m[4+i],b=m[8+i]; o[4+i]=a*c+b*s; o[8+i]=b*c-a*s; }
+  return o;
+}
+function m4RotateY(m,r) {
+  const s=Math.sin(r),c=Math.cos(r),o=m4Copy(m);
+  for(let i=0;i<4;i++) { const a=m[i],b=m[8+i]; o[i]=a*c-b*s; o[8+i]=a*s+b*c; }
+  return o;
+}
+function m4RotateZ(m,r) {
+  const s=Math.sin(r),c=Math.cos(r),o=m4Copy(m);
+  for(let i=0;i<4;i++) { const a=m[i],b=m[4+i]; o[i]=a*c+b*s; o[4+i]=b*c-a*s; }
+  return o;
+}
+
+function m4Inverse(m) {
+  const o=new Float32Array(16);
+  const m00=m[0],m01=m[1],m02=m[2],m03=m[3],m10=m[4],m11=m[5],m12=m[6],m13=m[7];
+  const m20=m[8],m21=m[9],m22=m[10],m23=m[11],m30=m[12],m31=m[13],m32=m[14],m33=m[15];
+  const b00=m00*m11-m01*m10,b01=m00*m12-m02*m10,b02=m00*m13-m03*m10;
+  const b03=m01*m12-m02*m11,b04=m01*m13-m03*m11,b05=m02*m13-m03*m12;
+  const b06=m20*m31-m21*m30,b07=m20*m32-m22*m30,b08=m20*m33-m23*m30;
+  const b09=m21*m32-m22*m31,b10=m21*m33-m23*m31,b11=m22*m33-m23*m32;
+  let det=b00*b11-b01*b10+b02*b09+b03*b08-b04*b07+b05*b06;
+  if(Math.abs(det)<1e-10) return m4();
+  det=1/det;
+  o[0]=(m11*b11-m12*b10+m13*b09)*det; o[1]=(m02*b10-m01*b11-m03*b09)*det;
+  o[2]=(m31*b05-m32*b04+m33*b03)*det; o[3]=(m22*b04-m21*b05-m23*b03)*det;
+  o[4]=(m12*b08-m10*b11-m13*b07)*det; o[5]=(m00*b11-m02*b08+m03*b07)*det;
+  o[6]=(m32*b02-m30*b05-m33*b01)*det; o[7]=(m20*b05-m22*b02+m23*b01)*det;
+  o[8]=(m10*b10-m11*b08+m13*b06)*det; o[9]=(m01*b08-m00*b10-m03*b06)*det;
+  o[10]=(m30*b04-m31*b02+m33*b00)*det; o[11]=(m21*b02-m20*b04-m23*b00)*det;
+  o[12]=(m11*b07-m10*b09-m12*b06)*det; o[13]=(m00*b09-m01*b07+m02*b06)*det;
+  o[14]=(m31*b01-m30*b03-m32*b00)*det; o[15]=(m20*b03-m21*b01+m22*b00)*det;
+  return o;
+}
+
+function m4MulV4(m,v) {
+  return [
+    m[0]*v[0]+m[4]*v[1]+m[8]*v[2]+m[12]*v[3],
+    m[1]*v[0]+m[5]*v[1]+m[9]*v[2]+m[13]*v[3],
+    m[2]*v[0]+m[6]*v[1]+m[10]*v[2]+m[14]*v[3],
+    m[3]*v[0]+m[7]*v[1]+m[11]*v[2]+m[15]*v[3]
+  ];
+}
+
+/* ===== KEPLER SOLVER ===== */
+function solveKepler(M, e) {
+  M = M % TAU; if (M < 0) M += TAU;
+  let E = M;
+  for (let i = 0; i < 15; i++) {
+    const dE = (E - e * Math.sin(E) - M) / (1 - e * Math.cos(E));
+    E -= dE;
+    if (Math.abs(dE) < 1e-10) break;
+  }
+  return E;
+}
+
+function orbitalPos(a, e, inc, Omega, omega, M) {
+  const E = solveKepler(M, e);
+  const cosE = Math.cos(E), sinE = Math.sin(E);
+  const nu = Math.atan2(Math.sqrt(1 - e * e) * sinE, cosE - e);
+  const r = a * (1 - e * cosE);
+  const xp = r * Math.cos(nu), yp = r * Math.sin(nu);
+
+  const cO = Math.cos(Omega), sO = Math.sin(Omega);
+  const cw = Math.cos(omega), sw = Math.sin(omega);
+  const ci = Math.cos(inc), si = Math.sin(inc);
+
+  return [
+    (cO*cw - sO*sw*ci)*xp + (-cO*sw - sO*cw*ci)*yp,
+    (sO*cw + cO*sw*ci)*xp + (-sO*sw + cO*cw*ci)*yp,
+    (sw*si)*xp + (cw*si)*yp
+  ];
+}
+
+function orbitPathPoints(a, e, inc, Omega, omega, segs) {
+  const pts = [];
+  for (let i = 0; i < segs; i++) {
+    const nu = i * TAU / segs;
+    const r = a * (1 - e*e) / (1 + e * Math.cos(nu));
+    const xp = r * Math.cos(nu), yp = r * Math.sin(nu);
+    const cO=Math.cos(Omega),sO=Math.sin(Omega),cw=Math.cos(omega),sw=Math.sin(omega);
+    const ci=Math.cos(inc),si=Math.sin(inc);
+    pts.push(
+      (cO*cw-sO*sw*ci)*xp+(-cO*sw-sO*cw*ci)*yp,
+      (sO*cw+cO*sw*ci)*xp+(-sO*sw+cO*cw*ci)*yp,
+      (sw*si)*xp+(cw*si)*yp
+    );
+  }
+  return new Float32Array(pts);
+}
+
+/* ===== GEOMETRY ===== */
+function createSphere(latB, lonB) {
+  const pos=[], nrm=[], idx=[];
+  for(let lat=0;lat<=latB;lat++){
+    const th=lat*PI/latB, sinT=Math.sin(th), cosT=Math.cos(th);
+    for(let lon=0;lon<=lonB;lon++){
+      const ph=lon*TAU/lonB;
+      const x=Math.cos(ph)*sinT, y=cosT, z=Math.sin(ph)*sinT;
+      pos.push(x,y,z); nrm.push(x,y,z);
+    }
+  }
+  for(let lat=0;lat<latB;lat++) for(let lon=0;lon<lonB;lon++){
+    const a=lat*(lonB+1)+lon, b=a+lonB+1;
+    idx.push(a,b,a+1, b,b+1,a+1);
+  }
+  return { pos:new Float32Array(pos), nrm:new Float32Array(nrm), idx:new Uint16Array(idx), count:idx.length };
+}
+
+function createRing(innerR, outerR, segs) {
+  const pos=[], nrm=[], idx=[];
+  for(let i=0;i<=segs;i++){
+    const a=i*TAU/segs, co=Math.cos(a), si=Math.sin(a);
+    pos.push(innerR*co,0,innerR*si); nrm.push(0,1,0);
+    pos.push(outerR*co,0,outerR*si); nrm.push(0,1,0);
+  }
+  for(let i=0;i<segs;i++){
+    const a=i*2,b=a+1,c=a+2,d=a+3;
+    idx.push(a,b,c, b,d,c);
+  }
+  return { pos:new Float32Array(pos), nrm:new Float32Array(nrm), idx:new Uint16Array(idx), count:idx.length };
+}
+
+/* ===== SHADERS ===== */
+const bodyVS = `
+attribute vec3 aPos, aNrm;
+uniform mat4 uProj, uView, uModel;
+varying vec3 vNrm, vWorld, vLocal;
+void main(){
+  vLocal = aPos;
+  vec4 w = uModel * vec4(aPos,1.0);
+  vWorld = w.xyz;
+  vNrm = normalize(mat3(uModel) * aNrm);
+  gl_Position = uProj * uView * w;
+}`;
+
+const bodyFS = `
+precision mediump float;
+varying vec3 vNrm, vWorld, vLocal;
+uniform vec3 uC1, uC2, uC3, uSunPos;
+uniform float uEmissive, uBands;
+void main(){
+  vec3 N = normalize(vNrm);
+  float lat = vLocal.y;
+  vec3 col;
+  if(uBands > 0.5){
+    float b = sin(lat * uBands * 3.14159);
+    col = mix(uC1, uC2, b*0.5+0.5);
+    float ac = smoothstep(0.85,1.0, abs(sin(lat*uBands*6.28)));
+    col = mix(col, uC3, ac*0.35);
+  } else {
+    col = mix(uC1, uC2, abs(lat));
+  }
+  if(uEmissive > 0.5){
+    float edge = 1.0 - abs(dot(N, normalize(vWorld - vec3(0.0))));
+    col = col * (1.0 + 0.6 * edge);
+    gl_FragColor = vec4(col, 1.0);
+  } else {
+    vec3 L = normalize(uSunPos - vWorld);
+    float diff = max(dot(N,L),0.0);
+    float ambient = 0.06;
+    col *= ambient + (1.0-ambient)*diff;
+    gl_FragColor = vec4(col, 1.0);
+  }
+}`;
+
+const ringVS = `
+attribute vec3 aPos, aNrm;
+uniform mat4 uProj, uView, uModel;
+varying vec3 vWorld, vLocal;
+void main(){
+  vLocal = aPos;
+  vec4 w = uModel * vec4(aPos,1.0);
+  vWorld = w.xyz;
+  gl_Position = uProj * uView * w;
+}`;
+
+const ringFS = `
+precision mediump float;
+varying vec3 vWorld, vLocal;
+uniform vec3 uSunPos, uRC1, uRC2;
+uniform float uInner, uOuter;
+void main(){
+  float d = length(vLocal.xz);
+  float t = clamp((d - uInner)/(uOuter - uInner), 0.0, 1.0);
+  float band = sin(t*50.0)*0.5+0.5;
+  vec3 col = mix(uRC1, uRC2, band);
+  vec3 L = normalize(uSunPos - vWorld);
+  float diff = abs(L.y)*0.8 + 0.2;
+  col *= diff;
+  float gap = smoothstep(0.0,0.03,t)*smoothstep(1.0,0.97,t);
+  float cassini = 1.0 - 0.7*smoothstep(0.55,0.58,t)*smoothstep(0.65,0.62,t);
+  float alpha = 0.65 * gap * cassini;
+  gl_FragColor = vec4(col, alpha);
+}`;
+
+const lineVS = `
+attribute vec3 aPos;
+uniform mat4 uMVP;
+void main(){ gl_Position = uMVP * vec4(aPos,1.0); gl_PointSize = 1.5; }`;
+
+const lineFS = `
+precision mediump float;
+uniform vec4 uColor;
+void main(){ gl_FragColor = uColor; }`;
+
+/* ===== COMPILE SHADERS ===== */
+function compileShader(src, type) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) { console.error(gl.getShaderInfoLog(s)); gl.deleteShader(s); return null; }
+  return s;
+}
+function linkProgram(vs, fs) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compileShader(vs, gl.VERTEX_SHADER));
+  gl.attachShader(p, compileShader(fs, gl.FRAGMENT_SHADER));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) { console.error(gl.getProgramInfoLog(p)); return null; }
+  return p;
+}
+
+const bodyProg = linkProgram(bodyVS, bodyFS);
+const ringProg = linkProgram(ringVS, ringFS);
+const lineProg = linkProgram(lineVS, lineFS);
+
+function getU(prog, name) { return gl.getUniformLocation(prog, name); }
+function getA(prog, name) { return gl.getAttribLocation(prog, name); }
+
+const bodyLoc = {
+  aPos: getA(bodyProg,'aPos'), aNrm: getA(bodyProg,'aNrm'),
+  uProj: getU(bodyProg,'uProj'), uView: getU(bodyProg,'uView'), uModel: getU(bodyProg,'uModel'),
+  uC1: getU(bodyProg,'uC1'), uC2: getU(bodyProg,'uC2'), uC3: getU(bodyProg,'uC3'),
+  uSunPos: getU(bodyProg,'uSunPos'), uEmissive: getU(bodyProg,'uEmissive'), uBands: getU(bodyProg,'uBands')
+};
+const ringLoc = {
+  aPos: getA(ringProg,'aPos'), aNrm: getA(ringProg,'aNrm'),
+  uProj: getU(ringProg,'uProj'), uView: getU(ringProg,'uView'), uModel: getU(ringProg,'uModel'),
+  uSunPos: getU(ringProg,'uSunPos'), uRC1: getU(ringProg,'uRC1'), uRC2: getU(ringProg,'uRC2'),
+  uInner: getU(ringProg,'uInner'), uOuter: getU(ringProg,'uOuter')
+};
+const lineLoc = {
+  aPos: getA(lineProg,'aPos'), uMVP: getU(lineProg,'uMVP'), uColor: getU(lineProg,'uColor')
+};
+
+/* ===== GEOMETRY BUFFERS ===== */
+const sphereHi = createSphere(32, 32);
+const sphereLo = createSphere(16, 16);
+const ringGeo = createRing(1.2, 2.3, 64);
+
+function makeVBO(data) { const b=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,b); gl.bufferData(gl.ARRAY_BUFFER,data,gl.STATIC_DRAW); return b; }
+function makeIBO(data) { const b=gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,b); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,data,gl.STATIC_DRAW); return b; }
+
+const sphHi = { pos:makeVBO(sphereHi.pos), nrm:makeVBO(sphereHi.nrm), idx:makeIBO(sphereHi.idx), count:sphereHi.count };
+const sphLo = { pos:makeVBO(sphereLo.pos), nrm:makeVBO(sphereLo.nrm), idx:makeIBO(sphereLo.idx), count:sphereLo.count };
+const ringBuf = { pos:makeVBO(ringGeo.pos), nrm:makeVBO(ringGeo.nrm), idx:makeIBO(ringGeo.idx), count:ringGeo.count };
+
+/* ===== STARFIELD ===== */
+const NSTARS = 2000;
+const starData = new Float32Array(NSTARS * 3);
+for (let i = 0; i < NSTARS; i++) {
+  const th = Math.random()*PI, ph = Math.random()*TAU, r = 300 + Math.random()*200;
+  starData[i*3] = r*Math.sin(th)*Math.cos(ph);
+  starData[i*3+1] = r*Math.sin(th)*Math.sin(ph);
+  starData[i*3+2] = r*Math.cos(th);
+}
+const starVBO = makeVBO(starData);
+
+/* ===== ASTRONOMICAL DATA ===== */
+// Display distances use sqrt scaling: displayDist = 8 * a^0.45
+// Display radii are manually tuned for visibility
+// Orbital elements: a(AU), e, i(deg), Omega(deg), omega(deg), T(years)
+
+const BODIES = [
+  // Sun
+  { name:'Sun', type:'star', parent:-1,
+    realRadius:696340, displayRadius:3.0,
+    c1:[1,.92,.4], c2:[1,.65,.15], c3:[1,.35,.05],
+    emissive:1, bands:0, axialTilt:7.25*DEG,
+    a:0,e:0,inc:0,Omega:0,omega:0,T:1,
+    realDist:0, realPeriod:0, info:'Type: G2V Star' },
+  // Mercury
+  { name:'Mercury', type:'planet', parent:0,
+    realRadius:2440, displayRadius:0.25,
+    c1:[.62,.6,.58], c2:[.42,.4,.38], c3:[.5,.48,.46],
+    emissive:0, bands:0, axialTilt:0.03*DEG,
+    a:0.387, e:0.2056, inc:7.0*DEG, Omega:48.33*DEG, omega:29.12*DEG, T:0.2408,
+    realDist:57.9, realPeriod:88, info:'Smallest planet, no atmosphere' },
+  // Venus
+  { name:'Venus', type:'planet', parent:0,
+    realRadius:6052, displayRadius:0.38,
+    c1:[.9,.78,.5], c2:[.85,.7,.45], c3:[.8,.65,.4],
+    emissive:0, bands:0, axialTilt:177.4*DEG,
+    a:0.723, e:0.0068, inc:3.39*DEG, Omega:76.68*DEG, omega:54.88*DEG, T:0.6152,
+    realDist:108.2, realPeriod:225, info:'Hottest planet, retrograde rotation' },
+  // Earth
+  { name:'Earth', type:'planet', parent:0,
+    realRadius:6371, displayRadius:0.40,
+    c1:[.2,.45,.8], c2:[.15,.55,.3], c3:[.9,.92,.95],
+    emissive:0, bands:0, axialTilt:23.44*DEG,
+    a:1.0, e:0.0167, inc:0.0*DEG, Omega:0*DEG, omega:102.9*DEG, T:1.0,
+    realDist:149.6, realPeriod:365.25, info:'Our home, liquid water on surface' },
+  // Mars
+  { name:'Mars', type:'planet', parent:0,
+    realRadius:3390, displayRadius:0.30,
+    c1:[.8,.35,.2], c2:[.7,.45,.3], c3:[.9,.85,.75],
+    emissive:0, bands:0, axialTilt:25.19*DEG,
+    a:1.524, e:0.0934, inc:1.85*DEG, Omega:49.56*DEG, omega:286.5*DEG, T:1.881,
+    realDist:227.9, realPeriod:687, info:'The Red Planet, has polar ice caps' },
+  // Jupiter
+  { name:'Jupiter', type:'planet', parent:0,
+    realRadius:69911, displayRadius:1.5,
+    c1:[.82,.68,.5], c2:[.7,.55,.4], c3:[.6,.42,.3],
+    emissive:0, bands:8, axialTilt:3.13*DEG,
+    a:5.203, e:0.0489, inc:1.30*DEG, Omega:100.5*DEG, omega:273.9*DEG, T:11.86,
+    realDist:778.5, realPeriod:4333, info:'Largest planet, Great Red Spot' },
+  // Saturn
+  { name:'Saturn', type:'planet', parent:0,
+    realRadius:58232, displayRadius:1.3,
+    c1:[.88,.8,.6], c2:[.78,.7,.52], c3:[.65,.58,.42],
+    emissive:0, bands:6, axialTilt:26.73*DEG, hasRings:true,
+    a:9.537, e:0.0565, inc:2.49*DEG, Omega:113.7*DEG, omega:339.4*DEG, T:29.46,
+    realDist:1434, realPeriod:10759, info:'Famous ring system, low density' },
+  // Uranus
+  { name:'Uranus', type:'planet', parent:0,
+    realRadius:25362, displayRadius:0.75,
+    c1:[.6,.82,.88], c2:[.5,.75,.82], c3:[.45,.7,.78],
+    emissive:0, bands:2, axialTilt:97.77*DEG,
+    a:19.19, e:0.0463, inc:0.77*DEG, Omega:74.0*DEG, omega:96.5*DEG, T:84.01,
+    realDist:2871, realPeriod:30687, info:'Tilted 98°, rolls on its side' },
+  // Neptune
+  { name:'Neptune', type:'planet', parent:0,
+    realRadius:24622, displayRadius:0.72,
+    c1:[.25,.38,.82], c2:[.2,.32,.7], c3:[.35,.5,.9],
+    emissive:0, bands:3, axialTilt:28.32*DEG,
+    a:30.07, e:0.0095, inc:1.77*DEG, Omega:131.8*DEG, omega:273.2*DEG, T:164.8,
+    realDist:4495, realPeriod:60190, info:'Windiest planet, deep blue color' },
+  // === MOONS ===
+  // Moon (Earth)
+  { name:'Moon', type:'moon', parent:3,
+    realRadius:1737, displayRadius:0.12,
+    c1:[.7,.7,.7], c2:[.5,.5,.5], c3:[.6,.6,.6],
+    emissive:0, bands:0, axialTilt:1.5*DEG,
+    a:0.00257, e:0.0549, inc:5.14*DEG, Omega:0*DEG, omega:0*DEG, T:0.0748,
+    realDist:0.384, realPeriod:27.3, info:'Earth\'s natural satellite' },
+  // Phobos (Mars)
+  { name:'Phobos', type:'moon', parent:4,
+    realRadius:11, displayRadius:0.06,
+    c1:[.5,.45,.4], c2:[.4,.35,.3], c3:[.45,.4,.35],
+    emissive:0, bands:0, axialTilt:0,
+    a:0.0000627, e:0.015, inc:1.1*DEG, Omega:0*DEG, omega:0*DEG, T:0.000875,
+    realDist:0.00937, realPeriod:0.32, info:'Irregular shaped, very close to Mars' },
+  // Deimos (Mars)
+  { name:'Deimos', type:'moon', parent:4,
+    realRadius:6, displayRadius:0.05,
+    c1:[.55,.5,.45], c2:[.45,.4,.35], c3:[.5,.45,.4],
+    emissive:0, bands:0, axialTilt:0,
+    a:0.000157, e:0.0002, inc:1.8*DEG, Omega:0*DEG, omega:0*DEG, T:0.00346,
+    realDist:0.02346, realPeriod:1.26, info:'Smaller of Mars\' two moons' },
+  // Io (Jupiter)
+  { name:'Io', type:'moon', parent:5,
+    realRadius:1822, displayRadius:0.10,
+    c1:[.9,.8,.3], c2:[.85,.6,.2], c3:[.7,.4,.15],
+    emissive:0, bands:0, axialTilt:0,
+    a:0.00282, e:0.004, inc:0.04*DEG, Omega:0*DEG, omega:0*DEG, T:0.00485,
+    realDist:0.422, realPeriod:1.77, info:'Most volcanically active body' },
+  // Europa (Jupiter)
+  { name:'Europa', type:'moon', parent:5,
+    realRadius:1561, displayRadius:0.09,
+    c1:[.85,.8,.72], c2:[.7,.65,.6], c3:[.6,.55,.5],
+    emissive:0, bands:0, axialTilt:0,
+    a:0.00449, e:0.009, inc:0.47*DEG, Omega:0*DEG, omega:0*DEG, T:0.00972,
+    realDist:0.671, realPeriod:3.55, info:'Subsurface ocean, potential for life' },
+  // Ganymede (Jupiter)
+  { name:'Ganymede', type:'moon', parent:5,
+    realRadius:2634, displayRadius:0.12,
+    c1:[.65,.6,.55], c2:[.5,.48,.44], c3:[.55,.52,.48],
+    emissive:0, bands:0, axialTilt:0,
+    a:0.00716, e:0.001, inc:0.18*DEG, Omega:0*DEG, omega:0*DEG, T:0.0196,
+    realDist:1.07, realPeriod:7.15, info:'Largest moon in the solar system' },
+  // Callisto (Jupiter)
+  { name:'Callisto', type:'moon', parent:5,
+    realRadius:2410, displayRadius:0.11,
+    c1:[.45,.42,.38], c2:[.35,.32,.28], c3:[.4,.37,.33],
+    emissive:0, bands:0, axialTilt:0,
+    a:0.01259, e:0.007, inc:0.19*DEG, Omega:0*DEG, omega:0*DEG, T:0.0457,
+    realDist:1.883, realPeriod:16.69, info:'Most heavily cratered body' },
+  // Titan (Saturn)
+  { name:'Titan', type:'moon', parent:6,
+    realRadius:2575, displayRadius:0.11,
+    c1:[.75,.65,.4], c2:[.6,.5,.3], c3:[.65,.55,.35],
+    emissive:0, bands:0, axialTilt:0,
+    a:0.00817, e:0.029, inc:0.33*DEG, Omega:0*DEG, omega:0*DEG, T:0.0437,
+    realDist:1.222, realPeriod:15.95, info:'Dense atmosphere, methane lakes' },
+  // Enceladus (Saturn)
+  { name:'Enceladus', type:'moon', parent:6,
+    realRadius:252, displayRadius:0.07,
+    c1:[.95,.95,.95], c2:[.85,.88,.9], c3:[.9,.92,.94],
+    emissive:0, bands:0, axialTilt:0,
+    a:0.00159, e:0.005, inc:0.02*DEG, Omega:0*DEG, omega:0*DEG, T:0.00375,
+    realDist:0.238, realPeriod:1.37, info:'Ice geysers, subsurface ocean' },
+  // Titania (Uranus)
+  { name:'Titania', type:'moon', parent:7,
+    realRadius:789, displayRadius:0.08,
+    c1:[.7,.68,.65], c2:[.55,.53,.5], c3:[.6,.58,.55],
+    emissive:0, bands:0, axialTilt:0,
+    a:0.00292, e:0.001, inc:0.08*DEG, Omega:0*DEG, omega:0*DEG, T:0.0238,
+    realDist:0.436, realPeriod:8.71, info:'Largest moon of Uranus' },
+  // Triton (Neptune)
+  { name:'Triton', type:'moon', parent:8,
+    realRadius:1353, displayRadius:0.09,
+    c1:[.7,.75,.8], c2:[.55,.6,.65], c3:[.6,.65,.7],
+    emissive:0, bands:0, axialTilt:0,
+    a:0.00237, e:0.00002, inc:157*DEG, Omega:0*DEG, omega:0*DEG, T:0.0161,
+    realDist:0.355, realPeriod:5.88, info:'Retrograde orbit, captured KBO' }
+];
+
+// Compute display orbital distances
+function displayDist(a_au) { return 8 * Math.pow(a_au, 0.45); }
+// Moon display distances: exaggerate heavily so moons are visible around their parent
+function moonDisplayDist(body, idx_among_siblings) {
+  const parent = BODIES[body.parent];
+  return parent.displayRadius * (2.2 + idx_among_siblings * 1.0);
+}
+
+// Assign display distances
+const moonCounters = {};
+BODIES.forEach((b, i) => {
+  if (b.parent <= 0) {
+    b.dDist = b.parent < 0 ? 0 : displayDist(b.a);
+  } else {
+    const key = b.parent;
+    if (!(key in moonCounters)) moonCounters[key] = 0;
+    b.dDist = moonDisplayDist(b, moonCounters[key]++);
+  }
+  b.position = [0,0,0];
+});
+
+/* ===== ORBIT PATH BUFFERS ===== */
+const ORBIT_SEGS = 128;
+BODIES.forEach((b, i) => {
+  if (i === 0) { b.orbitVBO = null; return; }
+  const pts = orbitPathPoints(b.dDist, b.e, b.inc, b.Omega, b.omega, ORBIT_SEGS);
+  b.orbitVBO = makeVBO(pts);
+  b.orbitCount = ORBIT_SEGS;
+});
+
+/* ===== LABELS ===== */
+const labelsDiv = document.getElementById('labels');
+BODIES.forEach(b => {
+  const el = document.createElement('div');
+  el.className = 'label';
+  el.textContent = b.name;
+  labelsDiv.appendChild(el);
+  b.labelEl = el;
+});
+
+/* ===== CAMERA ===== */
+let camAz = 0.3, camEl = 0.5, camDist = 90;
+let focusIdx = 0; // index into BODIES
+let focusPos = [0,0,0];
+let focusPosSmooth = [0,0,0];
+let dragging = false, dragStart = null, dragAz = 0, dragEl = 0;
+let lastTouchDist = null;
+let dragMoved = false;
+
+function camEye() {
+  return [
+    focusPosSmooth[0] + camDist * Math.cos(camEl) * Math.sin(camAz),
+    focusPosSmooth[1] + camDist * Math.sin(camEl),
+    focusPosSmooth[2] + camDist * Math.cos(camEl) * Math.cos(camAz)
+  ];
+}
+
+function clampDist(d) { return Math.max(0.5, Math.min(500, d)); }
+
+// Mouse
+canvas.addEventListener('mousedown', e => {
+  dragging = true; dragMoved = false; dragStart = { x: e.clientX, y: e.clientY }; dragAz = camAz; dragEl = camEl;
+});
+window.addEventListener('mousemove', e => {
+  if (!dragging) return;
+  const dx = e.clientX - dragStart.x, dy = e.clientY - dragStart.y;
+  if (Math.abs(dx) > 3 || Math.abs(dy) > 3) dragMoved = true;
+  camAz = dragAz - dx * 0.005;
+  camEl = Math.max(-1.4, Math.min(1.4, dragEl + dy * 0.005));
+});
+window.addEventListener('mouseup', () => { dragging = false; });
+canvas.addEventListener('wheel', e => { e.preventDefault(); camDist = clampDist(camDist * (1 + e.deltaY * 0.001)); }, { passive: false });
+
+// Touch
+canvas.addEventListener('touchstart', e => {
+  if (e.touches.length === 1) {
+    dragging = true; dragStart = { x: e.touches[0].clientX, y: e.touches[0].clientY }; dragAz = camAz; dragEl = camEl;
+    lastTouchDist = null;
+  } else if (e.touches.length === 2) {
+    dragging = false;
+    lastTouchDist = Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY);
+  }
+  e.preventDefault();
+}, { passive: false });
+canvas.addEventListener('touchmove', e => {
+  if (e.touches.length === 1 && dragging && dragStart) {
+    camAz = dragAz - (e.touches[0].clientX - dragStart.x) * 0.005;
+    camEl = Math.max(-1.4, Math.min(1.4, dragEl + (e.touches[0].clientY - dragStart.y) * 0.005));
+  } else if (e.touches.length === 2) {
+    const d = Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY);
+    if (lastTouchDist != null) camDist = clampDist(camDist * (1 + (lastTouchDist - d) * 0.005));
+    lastTouchDist = d;
+  }
+  e.preventDefault();
+}, { passive: false });
+canvas.addEventListener('touchend', e => {
+  if (e.touches.length === 0) { dragging = false; lastTouchDist = null; }
+  else if (e.touches.length === 1) {
+    dragging = true; dragStart = { x: e.touches[0].clientX, y: e.touches[0].clientY }; dragAz = camAz; dragEl = camEl;
+    lastTouchDist = null;
+  }
+}, { passive: false });
+
+/* ===== PICKING ===== */
+function screenToRay(mx, my) {
+  const x = (mx / canvas.width) * 2 - 1;
+  const y = 1 - (my / canvas.height) * 2;
+  const invPV = m4Inverse(m4Mul(projMat, viewMat));
+  const n = m4MulV4(invPV, [x, y, -1, 1]);
+  const f = m4MulV4(invPV, [x, y, 1, 1]);
+  const np = [n[0]/n[3], n[1]/n[3], n[2]/n[3]];
+  const fp = [f[0]/f[3], f[1]/f[3], f[2]/f[3]];
+  return { origin: np, dir: v3Norm(v3Sub(fp, np)) };
+}
+
+function raySphere(ro, rd, c, r) {
+  const oc = v3Sub(ro, c);
+  const b = v3Dot(oc, rd);
+  const cc = v3Dot(oc, oc) - r * r;
+  const disc = b * b - cc;
+  if (disc < 0) return Infinity;
+  const t = -b - Math.sqrt(disc);
+  return t > 0 ? t : Infinity;
+}
+
+function pickBody(mx, my) {
+  const { origin, dir } = screenToRay(mx, my);
+  let best = Infinity, bestIdx = -1;
+  BODIES.forEach((b, i) => {
+    const clickR = Math.max(b.displayRadius * 1.5, 0.5);
+    const t = raySphere(origin, dir, b.position, clickR);
+    if (t < best) { best = t; bestIdx = i; }
+  });
+  return bestIdx;
+}
+
+let projMat, viewMat;
+
+canvas.addEventListener('click', e => {
+  if (dragMoved) return;
+  const idx = pickBody(e.clientX, e.clientY);
+  if (idx >= 0) setFocus(idx);
+});
+
+function setFocus(idx) {
+  focusIdx = idx;
+  const b = BODIES[idx];
+  // Adjust camera distance for body size
+  camDist = Math.max(b.displayRadius * 6, 3);
+  showInfo(b);
+}
+
+/* ===== INFO PANEL ===== */
+const infoDiv = document.getElementById('info');
+function showInfo(b) {
+  infoDiv.style.display = 'block';
+  infoDiv.innerHTML = `
+    <h3>${b.name}</h3>
+    <div class="row"><span>Type</span><span>${b.type}</span></div>
+    <div class="row"><span>Radius</span><span>${b.realRadius.toLocaleString()} km</span></div>
+    ${b.parent > 0
+      ? `<div class="row"><span>Dist from ${BODIES[b.parent].name}</span><span>${b.realDist} M km</span></div>`
+      : b.parent === 0
+      ? `<div class="row"><span>Dist from Sun</span><span>${b.realDist} M km</span></div>`
+      : ''}
+    ${b.realPeriod > 0
+      ? `<div class="row"><span>Orbital period</span><span>${b.realPeriod > 365 ? (b.realPeriod/365.25).toFixed(1)+' yr' : b.realPeriod.toFixed(1)+' days'}</span></div>`
+      : ''}
+    <div class="row"><span>Info</span><span>${b.info}</span></div>
+  `;
+}
+
+/* ===== UI CONTROLS ===== */
+let paused = false;
+// speed slider: 0→0.01x, 62→~1x, 100→16x (logarithmic)
+let showOrbits = true, showLabels = true;
+
+const speedSlider = document.getElementById('speed');
+const speedValEl = document.getElementById('speedVal');
+const btnPause = document.getElementById('btnPause');
+const btnReset = document.getElementById('btnReset');
+const chkOrbits = document.getElementById('chkOrbits');
+const chkLabels = document.getElementById('chkLabels');
+
+function getSpeed() { return 0.01 * Math.pow(1600, +speedSlider.value / 100); }
+function updateSpeedLabel() {
+  const s = getSpeed();
+  speedValEl.textContent = s >= 10 ? s.toFixed(0) + '×' : s >= 1 ? s.toFixed(1) + '×' : s.toFixed(2) + '×';
+}
+
+speedSlider.addEventListener('input', updateSpeedLabel);
+btnPause.addEventListener('click', () => {
+  paused = !paused;
+  btnPause.textContent = paused ? '▶' : '⏸';
+  btnPause.classList.toggle('active', paused);
+});
+btnReset.addEventListener('click', () => {
+  focusIdx = 0; camDist = 90; camAz = 0.3; camEl = 0.5;
+  infoDiv.style.display = 'none';
+});
+chkOrbits.addEventListener('change', () => { showOrbits = chkOrbits.checked; });
+chkLabels.addEventListener('change', () => { showLabels = chkLabels.checked; });
+updateSpeedLabel();
+
+/* ===== DRAW HELPERS ===== */
+function bindSphere(geo, prog, aPos, aNrm) {
+  gl.bindBuffer(gl.ARRAY_BUFFER, geo.pos);
+  if (aPos >= 0) { gl.enableVertexAttribArray(aPos); gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 0, 0); }
+  if (aNrm >= 0 && aNrm !== aPos) {
+    gl.bindBuffer(gl.ARRAY_BUFFER, geo.nrm);
+    gl.enableVertexAttribArray(aNrm); gl.vertexAttribPointer(aNrm, 3, gl.FLOAT, false, 0, 0);
+  }
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, geo.idx);
+}
+
+function drawBody(b, proj, view, sunPos) {
+  gl.useProgram(bodyProg);
+  const geo = (b.type === 'moon') ? sphLo : sphHi;
+  bindSphere(geo, bodyProg, bodyLoc.aPos, bodyLoc.aNrm);
+
+  let model = m4();
+  model = m4Translate(model, b.position[0], b.position[1], b.position[2]);
+  if (b.axialTilt) model = m4RotateZ(model, b.axialTilt);
+  model = m4Scale(model, b.displayRadius, b.displayRadius, b.displayRadius);
+
+  gl.uniformMatrix4fv(bodyLoc.uProj, false, proj);
+  gl.uniformMatrix4fv(bodyLoc.uView, false, view);
+  gl.uniformMatrix4fv(bodyLoc.uModel, false, model);
+  gl.uniform3fv(bodyLoc.uC1, b.c1);
+  gl.uniform3fv(bodyLoc.uC2, b.c2);
+  gl.uniform3fv(bodyLoc.uC3, b.c3);
+  gl.uniform3fv(bodyLoc.uSunPos, sunPos);
+  gl.uniform1f(bodyLoc.uEmissive, b.emissive);
+  gl.uniform1f(bodyLoc.uBands, b.bands);
+
+  gl.drawElements(gl.TRIANGLES, geo.count, gl.UNSIGNED_SHORT, 0);
+}
+
+
+function drawRing(saturn, proj, view, sunPos) {
+  gl.useProgram(ringProg);
+  gl.bindBuffer(gl.ARRAY_BUFFER, ringBuf.pos);
+  gl.enableVertexAttribArray(ringLoc.aPos);
+  gl.vertexAttribPointer(ringLoc.aPos, 3, gl.FLOAT, false, 0, 0);
+  if (ringLoc.aNrm >= 0) {
+    gl.bindBuffer(gl.ARRAY_BUFFER, ringBuf.nrm);
+    gl.enableVertexAttribArray(ringLoc.aNrm); gl.vertexAttribPointer(ringLoc.aNrm, 3, gl.FLOAT, false, 0, 0);
+  }
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ringBuf.idx);
+
+  let model = m4();
+  model = m4Translate(model, saturn.position[0], saturn.position[1], saturn.position[2]);
+  model = m4RotateZ(model, saturn.axialTilt || 0);
+  // Scale ring to match Saturn's display radius
+  const s = saturn.displayRadius;
+  model = m4Scale(model, s, s, s);
+
+  gl.uniformMatrix4fv(ringLoc.uProj, false, proj);
+  gl.uniformMatrix4fv(ringLoc.uView, false, view);
+  gl.uniformMatrix4fv(ringLoc.uModel, false, model);
+  gl.uniform3fv(ringLoc.uSunPos, sunPos);
+  gl.uniform3fv(ringLoc.uRC1, [0.85, 0.78, 0.6]);
+  gl.uniform3fv(ringLoc.uRC2, [0.65, 0.55, 0.4]);
+  gl.uniform1f(ringLoc.uInner, 1.2);
+  gl.uniform1f(ringLoc.uOuter, 2.3);
+
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.depthMask(false);
+  gl.disable(gl.CULL_FACE);
+  gl.drawElements(gl.TRIANGLES, ringBuf.count, gl.UNSIGNED_SHORT, 0);
+  gl.enable(gl.CULL_FACE);
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
+}
+
+function drawOrbit(b, proj, view, parentPos) {
+  if (!b.orbitVBO) return;
+  gl.useProgram(lineProg);
+  gl.bindBuffer(gl.ARRAY_BUFFER, b.orbitVBO);
+  gl.enableVertexAttribArray(lineLoc.aPos);
+  gl.vertexAttribPointer(lineLoc.aPos, 3, gl.FLOAT, false, 0, 0);
+
+  let mvp;
+  if (b.parent > 0) {
+    const tr = m4Translate(m4(), parentPos[0], parentPos[1], parentPos[2]);
+    mvp = m4Mul(m4Mul(proj, view), tr);
+  } else {
+    mvp = m4Mul(proj, view);
+  }
+
+  gl.uniformMatrix4fv(lineLoc.uMVP, false, mvp);
+  const alpha = b.type === 'moon' ? 0.15 : 0.25;
+  gl.uniform4fv(lineLoc.uColor, [...b.c1, alpha]);
+
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.drawArrays(gl.LINE_LOOP, 0, b.orbitCount);
+  gl.disable(gl.BLEND);
+}
+
+function drawStars(proj, view) {
+  gl.useProgram(lineProg);
+  gl.bindBuffer(gl.ARRAY_BUFFER, starVBO);
+  gl.enableVertexAttribArray(lineLoc.aPos);
+  gl.vertexAttribPointer(lineLoc.aPos, 3, gl.FLOAT, false, 0, 0);
+  gl.uniformMatrix4fv(lineLoc.uMVP, false, m4Mul(proj, view));
+  gl.uniform4fv(lineLoc.uColor, [1, 1, 1, 0.8]);
+  gl.drawArrays(gl.POINTS, 0, NSTARS);
+}
+
+/* ===== PROJECT 3D → SCREEN ===== */
+function project(pos, proj, view) {
+  const clip = m4MulV4(m4Mul(proj, view), [pos[0], pos[1], pos[2], 1]);
+  if (clip[3] <= 0) return null;
+  return {
+    x: (clip[0] / clip[3] * 0.5 + 0.5) * canvas.width,
+    y: (1 - (clip[1] / clip[3] * 0.5 + 0.5)) * canvas.height
+  };
+}
+
+/* ===== ANIMATION ===== */
+let simTime = 0; // in years
+let lastFrame = 0;
+
+function render(timestamp) {
+  const dt = lastFrame ? (timestamp - lastFrame) / 1000 : 0;
+  lastFrame = timestamp;
+
+  if (!paused) {
+    simTime += dt * getSpeed() * 0.5; // 0.5 years per real second at 1x
+  }
+
+  // Update positions
+  BODIES.forEach((b, i) => {
+    if (i === 0) { b.position = [0, 0, 0]; return; }
+    const M = TAU * simTime / b.T;
+    const pos = orbitalPos(b.dDist, b.e, b.inc, b.Omega, b.omega, M);
+    if (b.parent > 0) {
+      const pp = BODIES[b.parent].position;
+      b.position = v3Add(pp, pos);
+    } else {
+      b.position = pos;
+    }
+  });
+
+  // Camera focus tracking (smooth)
+  focusPos = BODIES[focusIdx].position;
+  focusPosSmooth = v3Lerp(focusPosSmooth, focusPos, Math.min(1, dt * 4));
+
+  const eye = camEye();
+  const up = [0, 1, 0];
+  projMat = m4Perspective(50 * DEG, canvas.width / canvas.height, 0.01, 1000);
+  viewMat = m4LookAt(eye, focusPosSmooth, up);
+  const sunPos = BODIES[0].position;
+
+  // Clear
+  gl.clearColor(0.01, 0.01, 0.03, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST);
+  gl.depthFunc(gl.LEQUAL);
+  gl.enable(gl.CULL_FACE);
+
+  // Stars
+  gl.disable(gl.DEPTH_TEST);
+  drawStars(projMat, viewMat);
+  gl.enable(gl.DEPTH_TEST);
+
+  // Bodies
+  BODIES.forEach((b, i) => { drawBody(b, projMat, viewMat, sunPos); });
+
+  // Saturn rings
+  const saturn = BODIES[6];
+  drawRing(saturn, projMat, viewMat, sunPos);
+
+  // Orbit paths
+  if (showOrbits) {
+    gl.disable(gl.DEPTH_TEST);
+    BODIES.forEach((b, i) => {
+      if (i === 0) return;
+      const parentPos = b.parent > 0 ? BODIES[b.parent].position : [0,0,0];
+      drawOrbit(b, projMat, viewMat, parentPos);
+    });
+    gl.enable(gl.DEPTH_TEST);
+  }
+
+  // Labels
+  BODIES.forEach((b, i) => {
+    if (!showLabels) { b.labelEl.style.opacity = '0'; return; }
+    const sc = project(b.position, projMat, viewMat);
+    if (!sc) { b.labelEl.style.opacity = '0'; return; }
+    // Fade labels that are far from camera or too small
+    const dist = v3Len(v3Sub(b.position, eye));
+    const apparent = b.displayRadius / dist * canvas.height;
+    if (apparent < 2 && b.type !== 'star') { b.labelEl.style.opacity = '0'; return; }
+    b.labelEl.style.opacity = '1';
+    b.labelEl.style.left = sc.x + 'px';
+    b.labelEl.style.top = sc.y + 'px';
+    const fontSize = Math.max(9, Math.min(14, apparent * 0.8));
+    b.labelEl.style.fontSize = fontSize + 'px';
+  });
+
+  requestAnimationFrame(render);
+}
+
+requestAnimationFrame(render);
+})();
+</script>
+</body>
+</html>
