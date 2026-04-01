@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-TW">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>3D Solar System</title>
+  <title>3D 太陽系</title>
   <style>
     :root { --bg: #000408; --ui: rgba(10,14,20,0.85); --accent: #4fc3f7; --text: #cfd8dc; }
     * { box-sizing: border-box; margin: 0; }
@@ -34,17 +34,17 @@
 <body>
 <canvas id="c"></canvas>
 <div id="labels"></div>
-<div id="hint">Drag to rotate · Scroll to zoom · Click a planet to focus</div>
+<div id="hint">拖曳旋轉 · 滾輪縮放 · 點擊星球聚焦</div>
 <div id="controls">
-  <button id="btnPause" title="Pause/Resume">⏸</button>
-  <span style="font-size:12px">Speed</span>
+  <button id="btnPause" title="暫停／繼續">⏸</button>
+  <span style="font-size:12px">速度</span>
   <input type="range" id="speed" min="0" max="100" value="71" step="1">
   <span id="speedVal">1×</span>
-  <label><input type="checkbox" id="chkOrbits" checked> Orbits</label>
-  <label><input type="checkbox" id="chkLabels" checked> Labels</label>
-  <button id="btnReset" title="Reset to Sun">☀ Reset</button>
+  <label><input type="checkbox" id="chkOrbits" checked> 軌道</label>
+  <label><input type="checkbox" id="chkLabels" checked> 標籤</label>
+  <button id="btnReset" title="重設至太陽">☀ 重設</button>
 </div>
-<div id="info"></div>
+<div id="info">站在<b>地球</b>上 – 仰望星空</div>
 
 <script>
 (() => {
@@ -53,7 +53,7 @@
 /* ===== CANVAS & GL ===== */
 const canvas = document.getElementById('c');
 const gl = canvas.getContext('webgl', { alpha: false, antialias: true });
-if (!gl) { document.body.innerText = 'WebGL not supported'; return; }
+if (!gl) { document.body.innerText = '此瀏覽器不支援 WebGL'; return; }
 
 function resize() {
   canvas.width = window.innerWidth;
@@ -395,146 +395,146 @@ const starVBO = makeVBO(starData);
 
 const BODIES = [
   // Sun
-  { name:'Sun', type:'star', parent:-1,
+  { name:'太陽', type:'star', parent:-1,
     realRadius:696340, displayRadius:3.0,
     c1:[1,.92,.4], c2:[1,.65,.15], c3:[1,.35,.05],
     emissive:1, bands:0, axialTilt:7.25*DEG,
     a:0,e:0,inc:0,Omega:0,omega:0,T:1,
-    realDist:0, realPeriod:0, info:'Type: G2V Star' },
+    realDist:0, realPeriod:0, info:'類型：G2V 恆星' },
   // Mercury
-  { name:'Mercury', type:'planet', parent:0,
+  { name:'水星', type:'planet', parent:0,
     realRadius:2440, displayRadius:0.25,
     c1:[.62,.6,.58], c2:[.42,.4,.38], c3:[.5,.48,.46],
     emissive:0, bands:0, axialTilt:0.03*DEG,
     a:0.387, e:0.2056, inc:7.0*DEG, Omega:48.33*DEG, omega:29.12*DEG, T:0.2408,
-    realDist:57.9, realPeriod:88, info:'Smallest planet, no atmosphere' },
+    realDist:57.9, realPeriod:88, info:'最小的行星，幾乎沒有大氣層' },
   // Venus
-  { name:'Venus', type:'planet', parent:0,
+  { name:'金星', type:'planet', parent:0,
     realRadius:6052, displayRadius:0.38,
     c1:[.9,.78,.5], c2:[.85,.7,.45], c3:[.8,.65,.4],
     emissive:0, bands:0, axialTilt:177.4*DEG,
     a:0.723, e:0.0068, inc:3.39*DEG, Omega:76.68*DEG, omega:54.88*DEG, T:0.6152,
-    realDist:108.2, realPeriod:225, info:'Hottest planet, retrograde rotation' },
+    realDist:108.2, realPeriod:225, info:'最熱的行星，逆行自轉' },
   // Earth
-  { name:'Earth', type:'planet', parent:0,
+  { name:'地球', type:'planet', parent:0,
     realRadius:6371, displayRadius:0.40,
     c1:[.2,.45,.8], c2:[.15,.55,.3], c3:[.9,.92,.95],
     emissive:0, bands:0, axialTilt:23.44*DEG,
     a:1.0, e:0.0167, inc:0.0*DEG, Omega:0*DEG, omega:102.9*DEG, T:1.0,
-    realDist:149.6, realPeriod:365.25, info:'Our home, liquid water on surface' },
+    realDist:149.6, realPeriod:365.25, info:'我們的家園，表面有液態水' },
   // Mars
-  { name:'Mars', type:'planet', parent:0,
+  { name:'火星', type:'planet', parent:0,
     realRadius:3390, displayRadius:0.30,
     c1:[.8,.35,.2], c2:[.7,.45,.3], c3:[.9,.85,.75],
     emissive:0, bands:0, axialTilt:25.19*DEG,
     a:1.524, e:0.0934, inc:1.85*DEG, Omega:49.56*DEG, omega:286.5*DEG, T:1.881,
-    realDist:227.9, realPeriod:687, info:'The Red Planet, has polar ice caps' },
+    realDist:227.9, realPeriod:687, info:'紅色星球，擁有極地冰帽' },
   // Jupiter
-  { name:'Jupiter', type:'planet', parent:0,
+  { name:'木星', type:'planet', parent:0,
     realRadius:69911, displayRadius:1.5,
     c1:[.82,.68,.5], c2:[.7,.55,.4], c3:[.6,.42,.3],
     emissive:0, bands:8, axialTilt:3.13*DEG,
     a:5.203, e:0.0489, inc:1.30*DEG, Omega:100.5*DEG, omega:273.9*DEG, T:11.86,
-    realDist:778.5, realPeriod:4333, info:'Largest planet, Great Red Spot' },
+    realDist:778.5, realPeriod:4333, info:'最大的行星，大紅斑' },
   // Saturn
-  { name:'Saturn', type:'planet', parent:0,
+  { name:'土星', type:'planet', parent:0,
     realRadius:58232, displayRadius:1.3,
     c1:[.88,.8,.6], c2:[.78,.7,.52], c3:[.65,.58,.42],
     emissive:0, bands:6, axialTilt:26.73*DEG, hasRings:true,
     a:9.537, e:0.0565, inc:2.49*DEG, Omega:113.7*DEG, omega:339.4*DEG, T:29.46,
-    realDist:1434, realPeriod:10759, info:'Famous ring system, low density' },
+    realDist:1434, realPeriod:10759, info:'著名的環系統，密度極低' },
   // Uranus
-  { name:'Uranus', type:'planet', parent:0,
+  { name:'天王星', type:'planet', parent:0,
     realRadius:25362, displayRadius:0.75,
     c1:[.6,.82,.88], c2:[.5,.75,.82], c3:[.45,.7,.78],
     emissive:0, bands:2, axialTilt:97.77*DEG,
     a:19.19, e:0.0463, inc:0.77*DEG, Omega:74.0*DEG, omega:96.5*DEG, T:84.01,
-    realDist:2871, realPeriod:30687, info:'Tilted 98°, rolls on its side' },
+    realDist:2871, realPeriod:30687, info:'傾斜 98°，側躺自轉' },
   // Neptune
-  { name:'Neptune', type:'planet', parent:0,
+  { name:'海王星', type:'planet', parent:0,
     realRadius:24622, displayRadius:0.72,
     c1:[.25,.38,.82], c2:[.2,.32,.7], c3:[.35,.5,.9],
     emissive:0, bands:3, axialTilt:28.32*DEG,
     a:30.07, e:0.0095, inc:1.77*DEG, Omega:131.8*DEG, omega:273.2*DEG, T:164.8,
-    realDist:4495, realPeriod:60190, info:'Windiest planet, deep blue color' },
+    realDist:4495, realPeriod:60190, info:'風速最快的行星，深藍色' },
   // === MOONS ===
   // Moon (Earth)
-  { name:'Moon', type:'moon', parent:3,
+  { name:'月球', type:'moon', parent:3,
     realRadius:1737, displayRadius:0.12,
     c1:[.7,.7,.7], c2:[.5,.5,.5], c3:[.6,.6,.6],
     emissive:0, bands:0, axialTilt:1.5*DEG,
     a:0.00257, e:0.0549, inc:5.14*DEG, Omega:0*DEG, omega:0*DEG, T:0.0748,
-    realDist:0.384, realPeriod:27.3, info:'Earth\'s natural satellite' },
+    realDist:0.384, realPeriod:27.3, info:'地球的天然衛星' },
   // Phobos (Mars)
-  { name:'Phobos', type:'moon', parent:4,
+  { name:'火衛一（福博斯）', type:'moon', parent:4,
     realRadius:11, displayRadius:0.06,
     c1:[.5,.45,.4], c2:[.4,.35,.3], c3:[.45,.4,.35],
     emissive:0, bands:0, axialTilt:0,
     a:0.0000627, e:0.015, inc:1.1*DEG, Omega:0*DEG, omega:0*DEG, T:0.000875,
-    realDist:0.00937, realPeriod:0.32, info:'Irregular shaped, very close to Mars' },
+    realDist:0.00937, realPeriod:0.32, info:'不規則形狀，非常接近火星' },
   // Deimos (Mars)
-  { name:'Deimos', type:'moon', parent:4,
+  { name:'火衛二（戴摩斯）', type:'moon', parent:4,
     realRadius:6, displayRadius:0.05,
     c1:[.55,.5,.45], c2:[.45,.4,.35], c3:[.5,.45,.4],
     emissive:0, bands:0, axialTilt:0,
     a:0.000157, e:0.0002, inc:1.8*DEG, Omega:0*DEG, omega:0*DEG, T:0.00346,
-    realDist:0.02346, realPeriod:1.26, info:'Smaller of Mars\' two moons' },
+    realDist:0.02346, realPeriod:1.26, info:'火星兩顆衛星中較小的一顆' },
   // Io (Jupiter)
-  { name:'Io', type:'moon', parent:5,
+  { name:'木衛一（埃歐）', type:'moon', parent:5,
     realRadius:1822, displayRadius:0.10,
     c1:[.9,.8,.3], c2:[.85,.6,.2], c3:[.7,.4,.15],
     emissive:0, bands:0, axialTilt:0,
     a:0.00282, e:0.004, inc:0.04*DEG, Omega:0*DEG, omega:0*DEG, T:0.00485,
-    realDist:0.422, realPeriod:1.77, info:'Most volcanically active body' },
+    realDist:0.422, realPeriod:1.77, info:'火山活動最活躍的天體' },
   // Europa (Jupiter)
-  { name:'Europa', type:'moon', parent:5,
+  { name:'木衛二（歐羅巴）', type:'moon', parent:5,
     realRadius:1561, displayRadius:0.09,
     c1:[.85,.8,.72], c2:[.7,.65,.6], c3:[.6,.55,.5],
     emissive:0, bands:0, axialTilt:0,
     a:0.00449, e:0.009, inc:0.47*DEG, Omega:0*DEG, omega:0*DEG, T:0.00972,
-    realDist:0.671, realPeriod:3.55, info:'Subsurface ocean, potential for life' },
+    realDist:0.671, realPeriod:3.55, info:'地下海洋，可能有生命存在' },
   // Ganymede (Jupiter)
-  { name:'Ganymede', type:'moon', parent:5,
+  { name:'木衛三（蓋尼米德）', type:'moon', parent:5,
     realRadius:2634, displayRadius:0.12,
     c1:[.65,.6,.55], c2:[.5,.48,.44], c3:[.55,.52,.48],
     emissive:0, bands:0, axialTilt:0,
     a:0.00716, e:0.001, inc:0.18*DEG, Omega:0*DEG, omega:0*DEG, T:0.0196,
-    realDist:1.07, realPeriod:7.15, info:'Largest moon in the solar system' },
+    realDist:1.07, realPeriod:7.15, info:'太陽系最大的衛星' },
   // Callisto (Jupiter)
-  { name:'Callisto', type:'moon', parent:5,
+  { name:'木衛四（卡利斯多）', type:'moon', parent:5,
     realRadius:2410, displayRadius:0.11,
     c1:[.45,.42,.38], c2:[.35,.32,.28], c3:[.4,.37,.33],
     emissive:0, bands:0, axialTilt:0,
     a:0.01259, e:0.007, inc:0.19*DEG, Omega:0*DEG, omega:0*DEG, T:0.0457,
-    realDist:1.883, realPeriod:16.69, info:'Most heavily cratered body' },
+    realDist:1.883, realPeriod:16.69, info:'坑洞最多的天體' },
   // Titan (Saturn)
-  { name:'Titan', type:'moon', parent:6,
+  { name:'土衛六（泰坦）', type:'moon', parent:6,
     realRadius:2575, displayRadius:0.11,
     c1:[.75,.65,.4], c2:[.6,.5,.3], c3:[.65,.55,.35],
     emissive:0, bands:0, axialTilt:0,
     a:0.00817, e:0.029, inc:0.33*DEG, Omega:0*DEG, omega:0*DEG, T:0.0437,
-    realDist:1.222, realPeriod:15.95, info:'Dense atmosphere, methane lakes' },
+    realDist:1.222, realPeriod:15.95, info:'濃密大氣層，甲烷湖泊' },
   // Enceladus (Saturn)
-  { name:'Enceladus', type:'moon', parent:6,
+  { name:'土衛二（恩克拉多斯）', type:'moon', parent:6,
     realRadius:252, displayRadius:0.07,
     c1:[.95,.95,.95], c2:[.85,.88,.9], c3:[.9,.92,.94],
     emissive:0, bands:0, axialTilt:0,
     a:0.00159, e:0.005, inc:0.02*DEG, Omega:0*DEG, omega:0*DEG, T:0.00375,
-    realDist:0.238, realPeriod:1.37, info:'Ice geysers, subsurface ocean' },
+    realDist:0.238, realPeriod:1.37, info:'冰噴泉，地下海洋' },
   // Titania (Uranus)
-  { name:'Titania', type:'moon', parent:7,
+  { name:'天衛三（提泰妮亞）', type:'moon', parent:7,
     realRadius:789, displayRadius:0.08,
     c1:[.7,.68,.65], c2:[.55,.53,.5], c3:[.6,.58,.55],
     emissive:0, bands:0, axialTilt:0,
     a:0.00292, e:0.001, inc:0.08*DEG, Omega:0*DEG, omega:0*DEG, T:0.0238,
-    realDist:0.436, realPeriod:8.71, info:'Largest moon of Uranus' },
+    realDist:0.436, realPeriod:8.71, info:'天王星最大的衛星' },
   // Triton (Neptune)
-  { name:'Triton', type:'moon', parent:8,
+  { name:'海衛一（崔頓）', type:'moon', parent:8,
     realRadius:1353, displayRadius:0.09,
     c1:[.7,.75,.8], c2:[.55,.6,.65], c3:[.6,.65,.7],
     emissive:0, bands:0, axialTilt:0,
     a:0.00237, e:0.00002, inc:157*DEG, Omega:0*DEG, omega:0*DEG, T:0.0161,
-    realDist:0.355, realPeriod:5.88, info:'Retrograde orbit, captured KBO' }
+    realDist:0.355, realPeriod:5.88, info:'逆行軌道，被捕獲的古柏帶天體' }
 ];
 
 // Compute display orbital distances
@@ -690,22 +690,23 @@ function setFocus(idx) {
 }
 
 /* ===== INFO PANEL ===== */
+const typeMap = {star:'恆星', planet:'行星', moon:'衛星'};
 const infoDiv = document.getElementById('info');
 function showInfo(b) {
   infoDiv.style.display = 'block';
   infoDiv.innerHTML = `
     <h3>${b.name}</h3>
-    <div class="row"><span>Type</span><span>${b.type}</span></div>
-    <div class="row"><span>Radius</span><span>${b.realRadius.toLocaleString()} km</span></div>
+    <div class="row"><span>類型</span><span>${typeMap[b.type]||b.type}</span></div>
+    <div class="row"><span>半徑</span><span>${b.realRadius.toLocaleString()} 公里</span></div>
     ${b.parent > 0
-      ? `<div class="row"><span>Dist from ${BODIES[b.parent].name}</span><span>${b.realDist} M km</span></div>`
+      ? `<div class="row"><span>與${BODIES[b.parent].name}距離</span><span>${b.realDist} 百萬公里</span></div>`
       : b.parent === 0
-      ? `<div class="row"><span>Dist from Sun</span><span>${b.realDist} M km</span></div>`
+      ? `<div class="row"><span>與太陽距離</span><span>${b.realDist} 百萬公里</span></div>`
       : ''}
     ${b.realPeriod > 0
-      ? `<div class="row"><span>Orbital period</span><span>${b.realPeriod > 365 ? (b.realPeriod/365.25).toFixed(1)+' yr' : b.realPeriod.toFixed(1)+' days'}</span></div>`
+      ? `<div class="row"><span>公轉週期</span><span>${b.realPeriod > 365 ? (b.realPeriod/365.25).toFixed(1)+' 年' : b.realPeriod.toFixed(1)+' 天'}</span></div>`
       : ''}
-    <div class="row"><span>Info</span><span>${b.info}</span></div>
+    <div class="row"><span>簡介</span><span>${b.info}</span></div>
   `;
 }
 
@@ -730,7 +731,7 @@ function updateSpeedLabel() {
 speedSlider.addEventListener('input', updateSpeedLabel);
 btnPause.addEventListener('click', () => {
   paused = !paused;
-  btnPause.textContent = paused ? '▶' : '⏸';
+  btnPause.textContent = paused ? '▶ 繼續' : '⏸';
   btnPause.classList.toggle('active', paused);
 });
 btnReset.addEventListener('click', () => {
