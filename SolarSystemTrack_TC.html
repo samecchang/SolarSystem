@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>行星天球視圖 – 星體軌跡</title>
+<style>
+:root{--bg:#06080e;--ui:rgba(8,12,20,0.88);--accent:#4fc3f7;--text:#cfd8dc}
+*{box-sizing:border-box;margin:0}
+body{background:var(--bg);overflow:hidden;font-family:'Segoe UI',system-ui,sans-serif;color:var(--text)}
+canvas{display:block;cursor:grab}
+canvas:active{cursor:grabbing}
+#controls{position:fixed;top:12px;left:12px;background:var(--ui);padding:12px 16px;border-radius:12px;
+  backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,0.08);z-index:10;display:flex;flex-direction:column;gap:8px;min-width:220px}
+#controls label{font-size:12px;display:flex;align-items:center;gap:6px}
+#controls select,#controls input[type=range]{accent-color:var(--accent);font-size:12px;background:#1a1e28;color:var(--text);border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:2px 4px}
+#controls select{width:100%}
+#controls input[type=range]{width:100%}
+.val{font-size:11px;min-width:38px;text-align:right;opacity:0.7}
+#info{position:fixed;bottom:12px;left:50%;transform:translateX(-50%);background:var(--ui);padding:8px 16px;border-radius:20px;
+  backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,0.08);font-size:12px;z-index:10;white-space:nowrap}
+#hint{position:fixed;top:12px;right:12px;font-size:11px;opacity:0.4;pointer-events:none;z-index:10;text-align:right}
+.lbl{position:absolute;pointer-events:none;font-size:10px;color:#fff;text-shadow:0 0 4px #000,0 0 8px #000;
+  transform:translate(-50%,-130%);white-space:nowrap;transition:opacity .15s}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="labelLayer"></div>
+<div id="hint">拖曳環視<br>滾輪縮放視野</div>
+<div id="controls">
+  <label>觀測者 <select id="selBody"></select></label>
+  <label>速度 <input type="range" id="speed" min="0" max="100" value="77" step="1"><span class="val" id="speedVal">1×</span></label>
+  <label>軌跡 <input type="range" id="trail" min="0" max="70" value="30" step="1"><span class="val" id="trailVal">3.0 天</span></label>
+  <label><input type="checkbox" id="chkLabels" checked> 標籤</label>
+  <button id="btnPause" style="background:none;border:1px solid rgba(255,255,255,0.15);color:var(--text);padding:3px 10px;border-radius:8px;cursor:pointer;font-size:12px">⏸ 暫停</button>
+</div>
+<div id="info">站在<b>地球</b>上 – 仰望星空</div>
+
+<script>
+(()=>{
+'use strict';
+const PI=Math.PI,TAU=2*PI,DEG=PI/180;
+
+/* ===== VECTOR MATH ===== */
+function v3Add(a,b){return[a[0]+b[0],a[1]+b[1],a[2]+b[2]]}
+function v3Sub(a,b){return[a[0]-b[0],a[1]-b[1],a[2]-b[2]]}
+function v3Scale(a,s){return[a[0]*s,a[1]*s,a[2]*s]}
+function v3Dot(a,b){return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]}
+function v3Cross(a,b){return[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]]}
+function v3Len(a){return Math.hypot(a[0],a[1],a[2])}
+function v3Norm(a){const l=v3Len(a);return l>1e-10?[a[0]/l,a[1]/l,a[2]/l]:[0,1,0]}
+
+/* ===== KEPLER ===== */
+function solveKepler(M,e){
+  M=M%TAU;if(M<0)M+=TAU;let E=M;
+  for(let i=0;i<15;i++){const dE=(E-e*Math.sin(E)-M)/(1-e*Math.cos(E));E-=dE;if(Math.abs(dE)<1e-10)break}
+  return E;
+}
+function orbitalPos(a,e,inc,Omega,omega,M){
+  const E=solveKepler(M,e),cosE=Math.cos(E),sinE=Math.sin(E);
+  const nu=Math.atan2(Math.sqrt(1-e*e)*sinE,cosE-e);
+  const r=a*(1-e*cosE),xp=r*Math.cos(nu),yp=r*Math.sin(nu);
+  const cO=Math.cos(Omega),sO=Math.sin(Omega),cw=Math.cos(omega),sw=Math.sin(omega);
+  const ci=Math.cos(inc),si=Math.sin(inc);
+  return[(cO*cw-sO*sw*ci)*xp+(-cO*sw-sO*cw*ci)*yp,
+         (sO*cw+cO*sw*ci)*xp+(-sO*sw+cO*cw*ci)*yp,
+         (sw*si)*xp+(cw*si)*yp];
+}
+
+/* ===== BODIES (real AU distances) ===== */
+const BODIES=[
+  {name:'太陽',type:'star',parent:-1,radius:696340,color:'#ffee88',
+   a:0,e:0,inc:0,Omega:0,omega:0,T:1,M0:0,axialTilt:7.25*DEG,rotPeriod:25.05},
+  {name:'水星',type:'planet',parent:0,radius:2440,color:'#b0a898',
+   a:0.387,e:0.2056,inc:7.0*DEG,Omega:48.33*DEG,omega:29.12*DEG,T:0.2408,M0:174.796*DEG,axialTilt:0.03*DEG,rotPeriod:58.65},
+  {name:'金星',type:'planet',parent:0,radius:6052,color:'#e6c878',
+   a:0.723,e:0.0068,inc:3.39*DEG,Omega:76.68*DEG,omega:54.88*DEG,T:0.6152,M0:50.115*DEG,axialTilt:177.4*DEG,rotPeriod:-243.02},
+  {name:'地球',type:'planet',parent:0,radius:6371,color:'#4488cc',
+   a:1.0,e:0.0167,inc:0.0*DEG,Omega:0*DEG,omega:102.9*DEG,T:1.0,M0:357.529*DEG,axialTilt:23.44*DEG,rotPeriod:0.9973},
+  {name:'火星',type:'planet',parent:0,radius:3390,color:'#cc6644',
+   a:1.524,e:0.0934,inc:1.85*DEG,Omega:49.56*DEG,omega:286.5*DEG,T:1.881,M0:19.373*DEG,axialTilt:25.19*DEG,rotPeriod:1.026},
+  {name:'木星',type:'planet',parent:0,radius:69911,color:'#d4a860',
+   a:5.203,e:0.0489,inc:1.30*DEG,Omega:100.5*DEG,omega:273.9*DEG,T:11.86,M0:20.020*DEG,axialTilt:3.13*DEG,rotPeriod:0.4135},
+  {name:'土星',type:'planet',parent:0,radius:58232,color:'#e8d8a0',
+   a:9.537,e:0.0565,inc:2.49*DEG,Omega:113.7*DEG,omega:339.4*DEG,T:29.46,M0:317.020*DEG,axialTilt:26.73*DEG,rotPeriod:0.4440},
+  {name:'天王星',type:'planet',parent:0,radius:25362,color:'#88ccdd',
+   a:19.19,e:0.0463,inc:0.77*DEG,Omega:74.0*DEG,omega:96.5*DEG,T:84.01,M0:142.238*DEG,axialTilt:97.77*DEG,rotPeriod:-0.7183},
+  {name:'海王星',type:'planet',parent:0,radius:24622,color:'#4466cc',
+   a:30.07,e:0.0095,inc:1.77*DEG,Omega:131.8*DEG,omega:273.2*DEG,T:164.8,M0:256.228*DEG,axialTilt:28.32*DEG,rotPeriod:0.6713},
+  {name:'月球',type:'moon',parent:3,radius:1737,color:'#cccccc',
+   a:0.00257,e:0.0549,inc:5.14*DEG,Omega:0,omega:0,T:0.0748,M0:134.96*DEG,axialTilt:1.5*DEG,rotPeriod:27.3},
+  {name:'火衛一（福博斯）',type:'moon',parent:4,radius:11,color:'#998877',
+   a:0.0000627,e:0.015,inc:1.1*DEG,Omega:0,omega:0,T:0.000875,M0:35*DEG,axialTilt:0,rotPeriod:0.32},
+  {name:'火衛二（戴摩斯）',type:'moon',parent:4,radius:6,color:'#aa9988',
+   a:0.000157,e:0.0002,inc:1.8*DEG,Omega:0,omega:0,T:0.00346,M0:180*DEG,axialTilt:0,rotPeriod:1.26},
+  {name:'木衛一（埃歐）',type:'moon',parent:5,radius:1822,color:'#ddbb44',
+   a:0.00282,e:0.004,inc:0.04*DEG,Omega:0,omega:0,T:0.00485,M0:342*DEG,axialTilt:0,rotPeriod:1.77},
+  {name:'木衛二（歐羅巴）',type:'moon',parent:5,radius:1561,color:'#ddd8cc',
+   a:0.00449,e:0.009,inc:0.47*DEG,Omega:0,omega:0,T:0.00972,M0:171*DEG,axialTilt:0,rotPeriod:3.55},
+  {name:'木衛三（蓋尼米德）',type:'moon',parent:5,radius:2634,color:'#aa9988',
+   a:0.00716,e:0.001,inc:0.18*DEG,Omega:0,omega:0,T:0.0196,M0:63*DEG,axialTilt:0,rotPeriod:7.15},
+  {name:'木衛四（卡利斯多）',type:'moon',parent:5,radius:2410,color:'#887766',
+   a:0.01259,e:0.007,inc:0.19*DEG,Omega:0,omega:0,T:0.0457,M0:298*DEG,axialTilt:0,rotPeriod:16.69},
+  {name:'土衛六（泰坦）',type:'moon',parent:6,radius:2575,color:'#cc9944',
+   a:0.00817,e:0.029,inc:0.33*DEG,Omega:0,omega:0,T:0.0437,M0:120*DEG,axialTilt:0,rotPeriod:15.95},
+  {name:'土衛二（恩克拉多斯）',type:'moon',parent:6,radius:252,color:'#eeeeff',
+   a:0.00159,e:0.005,inc:0.02*DEG,Omega:0,omega:0,T:0.00375,M0:215*DEG,axialTilt:0,rotPeriod:1.37},
+  {name:'天衛三（提泰妮亞）',type:'moon',parent:7,radius:789,color:'#bbbbaa',
+   a:0.00292,e:0.001,inc:0.08*DEG,Omega:0,omega:0,T:0.0238,M0:77*DEG,axialTilt:0,rotPeriod:8.71},
+  {name:'海衛一（崔頓）',type:'moon',parent:8,radius:1353,color:'#aabbcc',
+   a:0.00237,e:0.00002,inc:157*DEG,Omega:0,omega:0,T:0.0161,M0:310*DEG,axialTilt:0,rotPeriod:5.88}
+];
+
+// give each body an index and position array
+BODIES.forEach((b,i)=>{b.idx=i;b.pos=[0,0,0]});
+
+/* ===== CANVAS ===== */
+const canvas=document.getElementById('c');
+const ctx=canvas.getContext('2d');
+function resize(){canvas.width=innerWidth;canvas.height=innerHeight}
+resize(); window.addEventListener('resize',resize);
+
+/* ===== UI ===== */
+const selBody=document.getElementById('selBody');
+const speedSlider=document.getElementById('speed');
+const speedValEl=document.getElementById('speedVal');
+const trailSlider=document.getElementById('trail');
+const trailValEl=document.getElementById('trailVal');
+const chkLabels=document.getElementById('chkLabels');
+const btnPause=document.getElementById('btnPause');
+const infoEl=document.getElementById('info');
+const labelLayer=document.getElementById('labelLayer');
+
+// Populate observer select
+BODIES.forEach((b,i)=>{
+  const o=document.createElement('option');
+  o.value=i; o.textContent=b.name;
+  if(i===3) o.selected=true;
+  selBody.appendChild(o);
+});
+
+let observerIdx=3;
+function clearTrails(){BODIES.forEach(b=>{b.trail=[]})}
+clearTrails();
+selBody.addEventListener('change',()=>{
+  observerIdx=+selBody.value;
+  clearTrails();
+  infoEl.innerHTML='站在<b>'+BODIES[observerIdx].name+'</b>上 \u2013 仰望星空';
+});
+
+// Speed: 0.001x..8x  (1x = 1 Earth day per second of real time)
+function getSpeed(){return 0.001*Math.pow(8000,+speedSlider.value/100)}
+function updSpeedLbl(){const s=getSpeed();speedValEl.textContent=s>=1?s.toFixed(1)+'×':s>=0.01?s.toFixed(2)+'×':s.toFixed(3)+'×'}
+speedSlider.addEventListener('input',updSpeedLbl); updSpeedLbl();
+
+let trailDays=3.0;
+trailSlider.addEventListener('input',()=>{
+  trailDays=+trailSlider.value/10;
+  trailValEl.textContent=trailDays.toFixed(1)+' 天';
+  clearTrails();
+});
+
+let paused=false;
+btnPause.addEventListener('click',()=>{paused=!paused;btnPause.textContent=paused?'\u25b6 繼續':'\u23f8 暫停'});
+
+let showLabels=true;
+chkLabels.addEventListener('change',()=>{showLabels=chkLabels.checked});
+
+/* ===== CAMERA ===== */
+let camAz=0, camEl=PI/4, camFov=90*DEG;
+let dragging=false,dragX=0,dragY=0,dragAz=0,dragEl=0;
+canvas.addEventListener('mousedown',e=>{dragging=true;dragX=e.clientX;dragY=e.clientY;dragAz=camAz;dragEl=camEl});
+window.addEventListener('mousemove',e=>{
+  if(!dragging)return;
+  camAz=dragAz-(e.clientX-dragX)*0.003;
+  camEl=Math.max(-PI/2+0.01,Math.min(PI/2-0.01,dragEl+(e.clientY-dragY)*0.003));
+});
+window.addEventListener('mouseup',()=>{dragging=false});
+canvas.addEventListener('wheel',e=>{e.preventDefault();camFov=Math.max(20*DEG,Math.min(120*DEG,camFov+e.deltaY*0.001))},{passive:false});
+let lastTD=null;
+canvas.addEventListener('touchstart',e=>{
+  if(e.touches.length===1){dragging=true;dragX=e.touches[0].clientX;dragY=e.touches[0].clientY;dragAz=camAz;dragEl=camEl;lastTD=null}
+  else if(e.touches.length===2){dragging=false;lastTD=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY)}
+  e.preventDefault()},{passive:false});
+canvas.addEventListener('touchmove',e=>{
+  if(e.touches.length===1&&dragging){
+    camAz=dragAz-(e.touches[0].clientX-dragX)*0.003;
+    camEl=Math.max(-PI/2+0.01,Math.min(PI/2-0.01,dragEl+(e.touches[0].clientY-dragY)*0.003));
+  }else if(e.touches.length===2){
+    const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);
+    if(lastTD)camFov=Math.max(20*DEG,Math.min(120*DEG,camFov+(lastTD-d)*0.002));
+    lastTD=d;
+  }
+  e.preventDefault()},{passive:false});
+canvas.addEventListener('touchend',e=>{if(e.touches.length===0){dragging=false;lastTD=null}},{passive:false});
+
+/* ===== WORLD POSITIONS ===== */
+function computePositions(t){
+  BODIES.forEach((b,i)=>{
+    if(i===0){b.pos=[0,0,0];return}
+    const M=(b.M0||0)+TAU*t/b.T;
+    const p=orbitalPos(b.a,b.e,b.inc,b.Omega,b.omega,M);
+    b.pos=b.parent>0?v3Add(BODIES[b.parent].pos,p):p;
+  });
+}
+
+/* ===== LOCAL FRAME ===== */
+// Observer latitude on planet surface (radians from equator).
+// 40° N gives realistic diagonal star arcs and proper rise/set behaviour.
+const OBS_LAT=40*DEG;
+
+// Build the observer's local coordinate frame (up, east, north) once per time step.
+// Accounts for axial tilt, sidereal rotation, AND observer latitude so that
+// stars trace tilted arcs (not just horizontal) across the sky.
+function buildLocalFrame(ob, t){
+  const tilt=ob.axialTilt||0;
+  // Planet rotation axis (pole) in ecliptic coords
+  const pole=v3Norm([0, Math.sin(tilt), Math.cos(tilt)]);
+
+  // Two orthogonal equatorial-plane basis vectors
+  let ref=[1,0,0];
+  if(Math.abs(v3Dot(pole,ref))>0.9) ref=[0,1,0];
+  const e1=v3Norm(v3Cross(pole,ref));
+  const e2=v3Norm(v3Cross(pole,e1)); // (e1,e2,pole) right-handed
+
+  // Sidereal rotation angle
+  const rotAngle=TAU*(t*365.25)/(Math.abs(ob.rotPeriod)||1)*Math.sign(ob.rotPeriod||1);
+  const cr=Math.cos(rotAngle),sr=Math.sin(rotAngle);
+  const cosLat=Math.cos(OBS_LAT),sinLat=Math.sin(OBS_LAT);
+
+  // Zenith (up) at observer's latitude and current sidereal angle
+  const up=v3Norm([
+    cosLat*(cr*e1[0]+sr*e2[0])+sinLat*pole[0],
+    cosLat*(cr*e1[1]+sr*e2[1])+sinLat*pole[1],
+    cosLat*(cr*e1[2]+sr*e2[2])+sinLat*pole[2]
+  ]);
+
+  // East: tangent to latitude circle, in direction of planet rotation
+  const east=v3Norm([
+    -sr*e1[0]+cr*e2[0],
+    -sr*e1[1]+cr*e2[1],
+    -sr*e1[2]+cr*e2[2]
+  ]);
+
+  // North: toward pole along the surface (cross product ensures orthogonality)
+  const north=v3Norm(v3Cross(up,east));
+
+  return {up,east,north};
+}
+
+// Convert ecliptic direction to local az/el given a precomputed frame
+function dirToAzEl(dir, frame){
+  const d=v3Norm(dir);
+  const lx=v3Dot(d,frame.east);
+  const ly=v3Dot(d,frame.up);
+  const lz=v3Dot(d,frame.north);
+  return {az:Math.atan2(lx,lz), el:Math.asin(Math.max(-1,Math.min(1,ly)))};
+}
+
+/* ===== PROJECTION ===== */
+function azElToScreen(az,el){
+  let daz=az-camAz;
+  while(daz>PI)daz-=TAU; while(daz<-PI)daz+=TAU;
+  const del=el-camEl;
+  const scale=Math.min(canvas.width,canvas.height)/(2*Math.tan(camFov/2));
+  const x=canvas.width/2+daz*scale, y=canvas.height/2-del*scale;
+  const m=50;
+  return {x,y,inView:x>-m&&x<canvas.width+m&&y>-m&&y<canvas.height+m};
+}
+
+/* ===== STARFIELD (fixed ecliptic directions) ===== */
+const STARS=[];
+for(let i=0;i<1200;i++){
+  const th=Math.acos(2*Math.random()-1), ph=TAU*Math.random();
+  STARS.push({dir:[Math.sin(th)*Math.cos(ph), Math.sin(th)*Math.sin(ph), Math.cos(th)],
+              bright:0.2+Math.random()*0.8, size:0.5+Math.random()*1.5});
+}
+
+/* ===== LABEL ELEMENTS ===== */
+BODIES.forEach(b=>{
+  const el=document.createElement('div');
+  el.className='lbl'; el.textContent=b.name;
+  labelLayer.appendChild(el);
+  b.labelEl=el;
+});
+
+/* ===== RENDER ===== */
+let simTime=0, lastFrame=0;
+let lastTrailTime=-Infinity;
+
+// Pre-populate trails so they're visible on load
+{
+  const preDays=trailDays;
+  const preYears=preDays/365.25;
+  const nPre=Math.min(600, Math.max(60, preDays*40));
+  const step=preYears/nPre;
+  for(let s=0;s<=nPre;s++){
+    const t=-preYears+s*step;
+    computePositions(t);
+    const ob=BODIES[observerIdx];
+    const fr=buildLocalFrame(ob,t);
+    BODIES.forEach((b,i)=>{
+      if(i===observerIdx)return;
+      const rel=v3Sub(b.pos,ob.pos);
+      if(v3Len(rel)<1e-15)return;
+      const loc=dirToAzEl(rel,fr);
+      if(!b.trail)b.trail=[];
+      b.trail.push({t,az:loc.az,el:loc.el,dist:v3Len(rel)});
+    });
+  }
+  computePositions(0); // reset to t=0
+}
+
+function getBodySize(b,dist){
+  if(dist<1e-12)return 0;
+  const angSize=2*b.radius/149597870.7/dist;
+  const scale=Math.min(canvas.width,canvas.height)/(2*Math.tan(camFov/2));
+  return Math.max(2, angSize*scale*500);
+}
+
+function render(timestamp){
+  const dt=lastFrame?(timestamp-lastFrame)/1000:0;
+  lastFrame=timestamp;
+  // 1x speed = 1 Earth day per real second
+  if(!paused) simTime+=dt*getSpeed()/365.25;
+
+  const W=canvas.width, H=canvas.height;
+  computePositions(simTime);
+  const ob=BODIES[observerIdx];
+  const frame=buildLocalFrame(ob, simTime);
+
+  // --- Record trail sample ---
+  const trailYears=trailDays/365.25;
+  const sampleInterval=Math.max(trailYears/400, 1e-9);
+  if(simTime-lastTrailTime>=sampleInterval && !paused){
+    lastTrailTime=simTime;
+    BODIES.forEach((b,i)=>{
+      if(i===observerIdx)return;
+      const rel=v3Sub(b.pos,ob.pos);
+      if(v3Len(rel)<1e-15)return;
+      const loc=dirToAzEl(rel, frame);
+      if(!b.trail) b.trail=[];
+      b.trail.push({t:simTime, az:loc.az, el:loc.el, dist:v3Len(rel)});
+    });
+  }
+  // Trim old trail points
+  const cutoff=simTime-trailYears;
+  BODIES.forEach(b=>{
+    if(!b.trail)return;
+    while(b.trail.length>0 && b.trail[0].t<cutoff) b.trail.shift();
+  });
+
+  // === DRAW ===
+  ctx.fillStyle='#06080e';
+  ctx.fillRect(0,0,W,H);
+
+  // Stars (transform ecliptic dirs to local frame)
+  STARS.forEach(s=>{
+    const loc=dirToAzEl(s.dir, frame);
+    if(loc.el<-0.05)return; // below horizon, skip
+    const p=azElToScreen(loc.az, loc.el);
+    if(!p.inView)return;
+    ctx.globalAlpha=s.bright*0.6;
+    ctx.fillStyle='#fff';
+    ctx.fillRect(p.x-s.size/2, p.y-s.size/2, s.size, s.size);
+  });
+  ctx.globalAlpha=1;
+
+  // Horizon line
+  ctx.strokeStyle='rgba(100,140,180,0.3)';
+  ctx.lineWidth=1;
+  ctx.beginPath();
+  let first=true;
+  for(let a=-PI;a<=PI;a+=0.02){
+    const p=azElToScreen(a,0);
+    if(first){ctx.moveTo(p.x,p.y);first=false}else ctx.lineTo(p.x,p.y);
+  }
+  ctx.stroke();
+  // Below horizon dim overlay
+  {
+    const hl=azElToScreen(-PI,0), hr=azElToScreen(PI,0);
+    const bottom=azElToScreen(0,-PI/2);
+    if(bottom.y>hl.y){
+      ctx.fillStyle='rgba(6,8,14,0.5)';
+      ctx.fillRect(0,hl.y,W,H-hl.y);
+    }
+  }
+  // Cardinal labels
+  ctx.fillStyle='rgba(150,180,210,0.5)';
+  ctx.font='12px sans-serif';
+  ctx.textAlign='center';
+  ['N','E','S','W'].forEach((d,i)=>{
+    const p=azElToScreen(i*PI/2,0);
+    if(p.inView)ctx.fillText(d,p.x,p.y+15);
+  });
+
+  // Trails and bodies
+  BODIES.forEach((b,i)=>{
+    if(i===observerIdx){b.labelEl.style.opacity='0';return}
+
+    // Always compute current live position
+    const rel=v3Sub(b.pos,ob.pos);
+    const dist=v3Len(rel);
+    if(dist<1e-15){b.labelEl.style.opacity='0';return}
+    const cur=dirToAzEl(rel, frame);
+    const sp=azElToScreen(cur.az, cur.el);
+
+    // Draw trail if we have points
+    const tr=b.trail;
+    if(tr&&tr.length>0){
+      const pts=tr.slice();
+      pts.push({t:simTime, az:cur.az, el:cur.el, dist});
+      const lw=b.type==='star'?2.5:1.5;
+      const n=pts.length;
+      for(let k=1;k<n;k++){
+        const p0=azElToScreen(pts[k-1].az, pts[k-1].el);
+        const p1=azElToScreen(pts[k].az, pts[k].el);
+        if(Math.abs(p1.x-p0.x)>W*0.45)continue; // skip azimuth-wrap lines
+        if(!p0.inView&&!p1.inView)continue;
+        const frac=k/(n-1);
+        ctx.strokeStyle=b.color;
+        ctx.lineWidth=lw*(0.3+0.7*frac);
+        ctx.globalAlpha=frac;
+        ctx.beginPath();
+        ctx.moveTo(p0.x,p0.y);
+        ctx.lineTo(p1.x,p1.y);
+        ctx.stroke();
+      }
+      ctx.globalAlpha=1;
+    }
+
+    if(!sp.inView){b.labelEl.style.opacity='0';return}
+
+    const sz=Math.max(2, Math.min(14, getBodySize(b,dist)));
+    ctx.fillStyle=b.color;
+    ctx.beginPath(); ctx.arc(sp.x,sp.y,sz,0,TAU); ctx.fill();
+
+    // Sun glow
+    if(b.type==='star'){
+      const g=ctx.createRadialGradient(sp.x,sp.y,sz,sp.x,sp.y,sz*5);
+      g.addColorStop(0,'rgba(255,238,136,0.35)');
+      g.addColorStop(1,'rgba(255,238,136,0)');
+      ctx.fillStyle=g;
+      ctx.beginPath(); ctx.arc(sp.x,sp.y,sz*5,0,TAU); ctx.fill();
+    }
+
+    // Label
+    if(showLabels){
+      b.labelEl.style.opacity='1';
+      b.labelEl.style.left=sp.x+'px';
+      b.labelEl.style.top=sp.y+'px';
+      b.labelEl.style.color=b.color;
+    }else{
+      b.labelEl.style.opacity='0';
+    }
+  });
+
+  // Zenith marker
+  {
+    const z=azElToScreen(camAz,PI/2);
+    if(z.inView){
+      ctx.fillStyle='rgba(200,220,255,0.3)';
+      ctx.font='10px sans-serif';
+      ctx.textAlign='center';
+      ctx.fillText('\u2191 Zenith',z.x,z.y);
+    }
+  }
+
+  requestAnimationFrame(render);
+}
+requestAnimationFrame(render);
+})();
+</script>
+</body>
+</html>
